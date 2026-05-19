@@ -1,0 +1,7 @@
+# Core dependencies
+anthropic>=0.40.0
+openpyxl>=3.1.0
+python-dotenv>=1.0.0
+
+# Progress bar (optional but recommended for long runs)
+tqdm>=4.66.0
