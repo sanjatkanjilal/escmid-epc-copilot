@@ -1,0 +1,58 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+
+# ── Programme PDFs ────────────────────────────────────────────────────────────
+# PDFs are large and subject to ESCMID copyright; share them separately.
+data/programmes/
+
+# ── Generated outputs ─────────────────────────────────────────────────────────
+# Reproducible from the PDFs + cache; no need to commit.
+data/output/
+
+# ── Tagging cache ─────────────────────────────────────────────────────────────
+# Contains API responses. Gitignored by default to keep the repo clean.
+# To share with collaborators so they don't re-pay for API calls,
+# either commit it explicitly (git add -f data/tagging_cache.json)
+# or share the file directly (email, Slack, shared drive).
+data/tagging_cache.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
+*.code-workspace
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
