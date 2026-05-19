@@ -289,83 +289,183 @@ def classify_type(context: str) -> str:
     return "Other"
 
 
-def extract_title_from_context(context_lines: list[str]) -> tuple[str, str]:
+def stitch_fragments(frags: list) -> str:
     """
-    Given a few lines of context following a session code, return (title, type).
-    Title typically appears after the session-type descriptor line.
+    Join multi-line title fragments from a narrow overview-table column.
+    Handles hyphenated line-breaks (fragment ends with '-') and plain wraps.
+    Stops at boilerplate lines (Chair, Hall, code, time, etc.).
     """
+    STOP = re.compile(
+        r'^(Chairs?|Hall|Arena|Co-organised|\d{2}:\d{2}|'
+        r'(?:OS|SY|EW|ME|LB|EF|KN|PM|CS|IS)\d{2,4})',
+        re.I
+    )
+    result = ""
+    for frag in frags:
+        frag = frag.strip()
+        if not frag or STOP.match(frag):
+            if result:
+                break
+            continue
+        if result.endswith("-"):
+            result = result[:-1] + frag   # de-hyphenate
+        elif result:
+            result += " " + frag
+        else:
+            result = frag
+        if len(result) > 120 and not frag.endswith("-"):
+            break
+    return result.strip()
+
+
+def is_faculty_listing_line(line: str) -> bool:
+    """
+    Return True if the line contains 2+ 'PersonName  CODE' pairs — the hallmark
+    of a faculty index page.
+
+    Catches 2025 format: 'Ajjampur Sitara Sr  EW005  Cameron Alexandra  PM6 ...'
+    Does NOT fire on single-pair lines like 'Muge Cevik  ME113  13:30 - 14:30'
+    (chair listed next to session code — that is a legitimate session entry).
+    """
+    pairs = re.findall(
+        r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z\'\-]+){0,3}\s+[A-Z]{2,}\d+',
+        line
+    )
+    return len(pairs) >= 2
+
+
+def is_faculty_index(context_lines: list) -> bool:
+    """
+    Detect speaker/faculty index pages. Two formats observed:
+      2022/2026: 'Surname, Firstname, City, Country  OS042'  (comma-separated)
+      2025:      'Firstname Lastname  EW005'                  (no commas, name before code)
+    """
+    ctx = " ".join(context_lines[:5])
+    # Format 1 — comma-separated with city/country
+    if re.search(
+        r'[A-Z][a-z]+,\s+[A-Z][a-z][a-z]+[^,]*,\s+[A-Z][a-z]+[^,]*,\s+[A-Z]',
+        ctx
+    ):
+        return True
+    # Format 2 — 'Firstname Lastname  CODE' on 2+ lines in context
+    name_code = re.compile(
+        r'^[A-Z][a-z]+(?:\s+[A-Z][a-z\'\-]+){1,4}\s{2,}[A-Z]{2,}\d+'
+    )
+    if sum(1 for l in context_lines[:6] if name_code.match(l.strip())) >= 2:
+        return True
+    return False
+
+
+def extract_title_from_context(context_lines: list) -> tuple:
+    """
+    Extract (title, session_type) from column-aware context lines.
+
+    Improvements:
+    - Stitches vertically-wrapped title fragments (handles hyphenated line-breaks)
+    - Detects and skips faculty-index contexts
+    - Strips abstract codes (e.g. 'S0367 09:00') leaked into titles
+    - Validates minimum title quality
+    """
+    if is_faculty_index(context_lines):
+        return "", "Other"
+
     session_type = "Other"
-    title = ""
-    found_type = False
+    title_frags  = []
+    found_type   = False
 
     for i, line in enumerate(context_lines):
         lc = line.lower().strip()
         if not lc:
             continue
-        # Detect the session-type descriptor line
-        if any(k in lc for k in ["oral session","symposium","educational","workshop",
-               "meet-the-expert","keynote","late-breaking","poster flash","pipeline",
-               "case session","oral case"]):
+
+        # Detect session-type line
+        if not found_type and any(k in lc for k in [
+                "oral session", "symposium", "educational", "workshop",
+                "meet-the-expert", "keynote", "late-breaking", "poster flash",
+                "pipeline", "case session", "oral case", "integrated"]):
             session_type = classify_type(line)
-            found_type = True
-            # Title is the next meaningful non-boilerplate line
-            for candidate_line in context_lines[i+1:]:
-                candidate = candidate_line.strip()
-                if not candidate:
+            found_type   = True
+            title_frags  = []
+            for k in range(i + 1, len(context_lines)):
+                frag = context_lines[k].strip()
+                if not frag:
                     continue
-                if re.match(r'^(Chairs?|Hall|Arena|Co-organised|Chair\s*$)', candidate, re.I):
-                    continue
-                if MODERN_CODE_RE.match(candidate) or Y2021_CODE_RE.match(candidate):
-                    continue
-                if re.match(r'^\d{2}:\d{2}', candidate):
-                    continue
-                if len(candidate) > 8:
-                    title = candidate
+                if re.match(r'^(Chairs?|Hall|Arena|Co-organised)', frag, re.I):
+                    break
+                if MODERN_CODE_RE.match(frag) or Y2021_CODE_RE.match(frag):
+                    break
+                if re.match(r'^\d{2}:\d{2}', frag):
+                    break
+                title_frags.append(frag)
+                if len(" ".join(title_frags)) > 130 and not frag.endswith("-"):
                     break
             break
 
-    # Fallback if no type line found
-    if not title:
+    # Fallback: no type line found — collect from first real non-boilerplate line
+    if not title_frags:
         for line in context_lines[1:]:
-            candidate = line.strip()
-            if (len(candidate) > 12
-                    and not MODERN_CODE_RE.match(candidate)
-                    and not Y2021_CODE_RE.match(candidate)
-                    and not re.match(r'^\d{2}:\d{2}', candidate)
-                    and not re.match(r'^(Chairs?|Hall|Arena)', candidate, re.I)):
-                title = candidate
-                break
+            c = line.strip()
+            if (len(c) > 8
+                    and not MODERN_CODE_RE.match(c)
+                    and not Y2021_CODE_RE.match(c)
+                    and not re.match(r'^\d{2}:\d{2}', c)
+                    and not re.match(r'^(Chairs?|Hall|Arena)', c, re.I)):
+                title_frags.append(c)
 
-    # Clean: remove leading abstract codes like "O0123 14:30 "
-    title = re.sub(r'^[A-Z]\d{3,5}\s+\d{2}:\d{2}\s+', '', title)
+    title = stitch_fragments(title_frags)
+
+    # Strip abstract codes leaked into the title (e.g. "Title S0367 09:00 ...")
+    title = re.sub(r'\s+[A-Z]\d{4}\s+\d{2}:\d{2}.*$', '', title)
+    # Strip page-footer text (e.g. "ESCMID Global | Munich, Germany 2026 29")
+    title = re.sub(r'\s+ESCMID\s+Global\s*\|.*$', '', title, flags=re.I)
+    title = re.sub(r'\s+please\s+convert\s+to.*$', '', title, flags=re.I)
+    # Strip right-column bleed (2+ space gap = column boundary in overview tables)
+    title = re.split(r'\s{2,}', title)[0].strip()
+    # Final whitespace normalisation
     title = re.sub(r'\s+', ' ', title).strip()
-
-    # Remove truncated right-column bleed: strip from the first 3+ space gap
-    # (the column separator in two-column layouts)
-    title = re.split(r'\s{3,}', title)[0].strip()
 
     return title, session_type
 
-
-def column_ctx(lines: list, line_idx: int, code_col: int, n: int = 9) -> list[str]:
+def column_ctx(lines: list, line_idx: int, code_col: int, n: int = 14) -> list[str]:
     """
     Extract context lines from the same column as the session code.
-    pdftotext -layout preserves horizontal positions via spaces.
-    Splitting at the page midpoint separates the two columns.
-    """
-    nearby = [l for l in lines[max(0, line_idx-3):line_idx+15] if l.strip()]
-    page_w = max((len(l) for l in nearby), default=110)
-    mid    = page_w // 2
-    right  = code_col > mid
 
+    Uses the code's own position as the column anchor rather than a computed
+    midpoint — this correctly handles both narrow overview-table columns (where
+    two codes sit 15-20 chars apart) and wide full-page columns.
+
+    For right-column codes: extract from code_col leftward, so we don't bleed
+    into adjacent left-column text on the same line.
+    For left-column codes: extract up to code_col end of neighbouring content.
+    """
+    code_line = lines[line_idx]
+    line_len  = len(code_line)
+
+    # Determine column: right if the code sits in the right half of this line
+    mid   = max(line_len // 2, 20)
+    right = code_col > mid
+
+    # Use the code's own position as column boundary (with a small buffer)
+    col_start = max(0, code_col - 2)    # right col: start just before the code
+    col_end   = code_col                 # left col: stop just before code's column
+
+    # Typical overview-table column width is ~22 chars; cap right extractions
+    # so we don't bleed into the immediately adjacent column.
+    COL_WIDTH = 26
     ctx = []
     for j in range(line_idx, min(line_idx + n, len(lines))):
         l = lines[j]
-        part = (l[mid:] if right else l[:mid + 15]).strip()
+        if right:
+            part = l[col_start: col_start + COL_WIDTH].strip()
+        else:
+            # Gap-split: take content up to the first 3+ space run.
+            # More reliable than a fixed midpoint for left-column titles that
+            # extend past the computed midpoint (e.g. long session titles).
+            gap_parts = re.split(r'\s{3,}', l)
+            part = gap_parts[0].strip() if gap_parts else l[:mid].strip()
         if part:
             ctx.append(part)
     return ctx
-
 
 def extract_sessions_modern(text: str, year: str) -> list[dict]:
     """
@@ -387,9 +487,15 @@ def extract_sessions_modern(text: str, year: str) -> list[dict]:
             code = m.group(1)
             if code[:2] not in INCLUDE_TYPES_MODERN or code in seen:
                 continue
+            # Skip lines with 2+ Name+Code pairs — faculty index pages
+            if is_faculty_listing_line(line):
+                continue
             ctx = column_ctx(lines, i, m.start())
             title, stype = extract_title_from_context(ctx)
-            if not title or len(title) < 6:
+            if not title or len(title) < 8:
+                return
+            # Reject titles that still look like person names after extraction
+            if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$', title):
                 return
             seen.add(code)
             sessions.append({"code": code, "year": year,
