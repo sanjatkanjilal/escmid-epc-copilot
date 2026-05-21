@@ -1,169 +1,189 @@
 # ESCMID EPC Copilot
 
-Extracts all sessions from ESCMID annual programme PDFs, classifies them
-using the **official ESCMID taxonomy** (12 categories, ~70 subcategories)
-via the Anthropic API, and produces:
-
-1. **`ESCMID_Programmes.xlsx`** — 13 sheets: overview matrix + one per ESCMID category
-2. **`ESCMID_Dashboard.html`** — self-contained interactive dashboard (no server needed)
+An end-to-end pipeline for analysing the ESCMID Global Congress scientific programme and supporting the Education Programme Committee (EPC) in reviewing session proposals for the 2027 Stockholm congress.
 
 ---
 
-## Repository structure
+## Overview
+
+The project has two main components:
+
+1. **Programme Analyser** (`escmid_analyser.py`) — extracts, classifies, and visualises sessions from ESCMID Global programme PDFs (2021–2026)
+2. **Proposal Reviewer** (`proposal_reviewer.py`) — parses submitted session proposals, tags them, scores them against the historical programme, and provides an interactive review dashboard
+
+---
+
+## Repository Structure
 
 ```
-escmid_analyser.py       ← main script
-requirements.txt         ← Python dependencies
-.env.example             ← API key template (copy to .env)
-data/
-  programmes/            ← place PDF files here (gitignored)
-  output/                ← generated files land here (gitignored)
-  tagging_cache.json     ← API responses cached here (gitignored by default)
+escmid-epc-copilot/
+├── escmid_analyser.py          # Main programme analysis pipeline
+├── proposal_reviewer.py        # Proposal review pipeline
+├── build_review_html.py        # HTML dashboard generator (importable module)
+├── parse_proposals_vscode.py   # HTML parser for ESCMID proposal pages
+├── requirements.txt
+├── data/
+│   ├── programmes/             # Source PDFs (2021–2026, not committed)
+│   ├── proposals/              # Proposal HTML files (view-source saves, not committed)
+│   ├── tagging_cache.json      # API response cache (ESCMID categories + 94 tags)
+│   └── output/
+│       ├── sessions_raw.json       # Extracted + classified sessions
+│       ├── ESCMID_Dashboard.html   # Interactive programme analysis dashboard
+│       ├── ESCMID_Programmes.xlsx  # Programme data workbook
+│       ├── proposals_tagged.json   # Parsed + scored proposals
+│       ├── Proposal_Review.html    # Interactive proposal review dashboard
+│       └── Proposal_Review.xlsx    # Proposal workbook with scoring columns
+└── README.md
 ```
 
 ---
 
-## Setup
+## Programme Analyser
 
-### 1. Clone and install
+### What it does
+
+- Extracts sessions from programme PDFs using **pdfplumber** (2022–2026) with word-level bounding box column separation, and pdftotext for the 2021 online format
+- Classifies each session into the **12 official ESCMID categories** (1–12) and their subcategories via the Anthropic API (cached)
+- Applies a **94-tag clinical/methodological taxonomy** to each session
+- Extracts individual **talk titles and speaker names** within each session in the same pdfplumber pass (no separate step needed)
+- Generates an **interactive HTML dashboard** and an **Excel workbook**
+
+### 94-Tag Taxonomy
+
+Organised into 12 groups: Methods · Study Design · ClinMicro · Infectious Diseases · Treatments · Syndromes · Special Hosts · AMR Pathogens · Microbiome · Public Health · Professional · Region
+
+### Commands
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/escmid-epc-copilot.git
-cd escmid-epc-copilot
+# Re-extract from PDFs using existing category + tag cache (recommended)
+python escmid_analyser.py --rebuild
+
+# Re-extract and re-apply 94 tags via API (~$3–5, ~90 min, cached after first run)
+python escmid_analyser.py --skip-tagging --add-tags
+
+# Full pipeline from scratch (expensive — only needed once)
+python escmid_analyser.py --api-extract --add-tags
+
+# Add talks to existing sessions_raw.json without re-running anything
+python escmid_analyser.py --talks-only
+```
+
+### Dashboard Tabs
+
+| Tab | Contents |
+|-----|----------|
+| Overview | Stacked bar chart of sessions by ESCMID category per year + session type mix |
+| Trends | All-category trend lines + per-category subcategory breakdowns |
+| Heatmap | Two side-by-side heatmaps: ESCMID subcategories × year (left), 94 tags × year (right) |
+| Network | D3 force-directed graph — 1,028 nodes (one per curated session), edges weighted by shared tags |
+| Explore | Searchable/filterable session table with dropdowns for year, category, subcategory, tag. Click any row for full details including talks |
+| Gaps | Under-represented ESCMID subcategories and tags — potential gaps for 2027 proposals |
+| People | Index of chairs and speakers across all years, searchable by name, filterable by year/role/category |
+
+---
+
+## Proposal Reviewer
+
+### What it does
+
+- Parses ESCMID proposal detail pages (saved as view-source HTML files) using BeautifulSoup
+- Extracts: session title, category, subcategory, type, proposing entities, chairs, reserve chairs, champion, topic titles, speakers, and motivation/description
+- Applies the same **94-tag taxonomy** to each proposal via API or keyword fallback
+- Scores each proposal against the historical programme:
+  - **Novelty** (0–1): how different is this from any previous ESCMID session? (tag Jaccard similarity)
+  - **Trend** (-1 to +1): is this topic growing or shrinking in the programme (2022→2026)?
+- Computes **heuristic AI ratings** (C1–C8) from available data; C9–C11 marked N/A
+- Optionally generates **full Claude evaluations** on all 11 EPC criteria via `--ai-review`
+- Generates an interactive HTML review dashboard and Excel scoring workbook
+
+### Setup
+
+1. For each assigned proposal, open it in Chrome, View Source (`Cmd+U`), save as `.html` into `data/proposals/`
+2. Files with `_list_` or `_keynote_interview_` in the name are index pages — the parser skips them automatically
+3. Individual proposals have `_proposal_view_id_` in the filename
+
+### Commands
+
+```bash
+# Parse proposals, score, compute heuristic AI ratings, generate outputs (free)
+python proposal_reviewer.py --skip-tagging
+
+# Also apply 94 tags via API (~$0.50 for ~200 proposals)
+python proposal_reviewer.py
+
+# Full Claude evaluation on all 11 EPC criteria (~$1–2 for ~200 proposals)
+python proposal_reviewer.py --skip-tagging --ai-review
+```
+
+### Serving the dashboard
+
+The review dashboard uses `localStorage` to save your ratings — open via HTTP, not `file://`:
+
+```bash
+cd data/output
+python3 -m http.server 8080
+# Open: http://localhost:8080/Proposal_Review.html
+```
+
+### Dashboard Tabs
+
+| Tab | Contents |
+|-----|----------|
+| Proposals | Full searchable table — click any row to open the Review Form |
+| Review Form | Split panel: proposal details (left) + rating form (right). C1–C11 criteria with hover descriptions and AI dot indicators. Overall star rating. Notes. ← → keyboard navigation. Download CSV at any time. |
+| Scores | Side-by-side novelty and trend bar charts — click any bar to open that proposal in the Review Form |
+| Criteria | Reference descriptions for all 11 EPC scoring criteria |
+
+### EPC Scoring Criteria
+
+| | Criterion |
+|--|-----------|
+| C1 | Hot / timely / controversial |
+| C2 | Not duplicated from recent meetings |
+| C3 | Cross-disciplinary / wide appeal |
+| C4 | Basic + translational + clinical integration |
+| C5 | Appropriate session format |
+| C6 | Relevant collaborators involved |
+| C7 | Adheres to session format rules |
+| C8 | Proper description provided |
+| C9 | Gender & geographic balance |
+| C10 | Best speakers / not self-serving |
+| C11 | Engages young investigators |
+
+### Excel Output
+
+- **Proposals sheet**: one row per proposal with all parsed fields, tags, novelty/trend scores, most similar historical session, and 11 yellow scoring columns (C1–C11 + Overall + Notes)
+- **Scoring Guide sheet**: full descriptions of all 11 criteria
+
+---
+
+## Installation
+
+```bash
+conda create -n escmid-epc-copilot python=3.12
+conda activate escmid-epc-copilot
 pip install -r requirements.txt
 ```
 
-### 2. Install pdftotext (from poppler)
+**requirements.txt** includes: `anthropic`, `pdfplumber`, `openpyxl`, `beautifulsoup4`, `python-dotenv`, `tqdm`
 
-```bash
-# macOS
-brew install poppler
-
-# Ubuntu / Debian
-sudo apt install poppler-utils
-
-# Windows: https://github.com/oschwartz10612/poppler-windows/releases
+Set your API key in a `.env` file:
 ```
-
-### 3. Set your Anthropic API key
-
-```bash
-cp .env.example .env
-# Open .env and paste your key — get one at console.anthropic.com
-```
-
-### 4. Add PDF files
-
-Place programme PDFs in `data/programmes/`. Expected filenames are set in
-`PROGRAMME_FILES` near the top of `escmid_analyser.py` — edit to match
-whatever filenames you have.
-
-### 5. Run
-
-```bash
-# Full run — API extraction + classification (recommended, ~$2-4 for all years)
-python escmid_analyser.py --api-extract
-
-# Classification only (faster if PDFs extract cleanly)
-python escmid_analyser.py
-
-# Keyword fallback — free, less accurate
-python escmid_analyser.py --skip-tagging
-
-# Specific years only
-python escmid_analyser.py --years 2025,2026
-
-# Dashboard only (re-use existing tagging cache)
-python escmid_analyser.py --skip-excel
-
-# All options
-python escmid_analyser.py --help
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ---
 
-## Cost and caching
+## Data Notes
 
-With `--api-extract` using `claude-sonnet-4-20250514`:
-
-| Sessions | Approximate cost | Approximate time |
-|---|---|---|
-| ~1,625 (all 6 years) | $2–4 | 15–20 min |
-| ~350 (one year) | $0.50 | 3–5 min |
-
-Results are cached in `data/tagging_cache.json`. **Re-runs are free** —
-the script checks the cache before making any API call.
-
-### Sharing the cache with collaborators
-
-The cache is gitignored by default but contains no secrets and is safe to share.
-
-```bash
-# Option A: commit it once for the team
-git add -f data/tagging_cache.json
-git commit -m "add tagging cache"
-
-# Option B: share the file directly (email, Slack, shared drive)
-# Collaborators place it at data/tagging_cache.json before running
-```
+- **PDF extraction**: pdfplumber uses word-level bounding boxes to separate the two-column programme layout. Talks are extracted in the same pass — no separate step needed for 2022–2026.
+- **2021 format**: The 2021 ECCMID (online) programme uses a different session code format (S##) and falls back to pdftotext extraction.
+- **Caching**: All API responses (ESCMID category classification, 94-tag assignments, AI proposal ratings) are cached in `data/tagging_cache.json`. Re-running any step is free if the cache is intact.
+- **Category rebuild**: If `sessions_raw.json` gets overwritten with bad data, run `python escmid_analyser.py --rebuild` — this re-extracts sessions with pdfplumber but restores categories and tags from the cache.
 
 ---
 
-## ESCMID Official Taxonomy
+## Future Plans
 
-Source: [escmid.org](https://www.escmid.org/congress-events/escmid-global/proposal-entry/escmid-global-categories-and-subcategories/)
-
-| # | Category | Subcategories |
-|---|---|---|
-| 1 | Viral infection & disease | 10 (incl. COVID-19, HIV, hepatitis) |
-| 2 | Bacterial infection & disease | 9 |
-| 3 | Bacterial susceptibility & resistance | 8 |
-| 4 | Diagnostic microbiology | 11 (incl. AI & digital health: **4j**) |
-| 5 | New antibacterial agents, PK/PD & stewardship | 6 |
-| 6 | Fungal infection & disease | 5 |
-| 7 | Parasitic diseases, travel medicine & migrant health | 6 |
-| 8 | Healthcare-associated infections & IPC | 9 |
-| 9 | Fundamental microbiology, pathogenesis & immunity | 6 |
-| 10 | Immune compromise & transplant ID | 6 |
-| 11 | Public health & vaccines | 8 |
-| 12 | Professional & educational affairs | 5 |
-
----
-
-## Improving the script
-
-| What to change | Where in the script |
-|---|---|
-| Add a new congress year | `PROGRAMME_FILES` dict (~line 95) |
-| Tune keyword classification rules | `KEYWORD_RULES` list |
-| Change which session types are extracted | `INCLUDE_TYPES_MODERN` / `INCLUDE_TYPES_2021` |
-| Edit the API classification prompt | `build_tagging_prompt()` |
-| Edit the combined extraction + classification prompt | `build_extract_classify_prompt()` |
-| Change dashboard styling | `generate_dashboard_html()` |
-| Change Excel formatting | `write_overview_sheet()` / `write_category_sheet()` |
-
----
-
-## Contributing
-
-Pull requests welcome. Suggested areas:
-
-- Improved PDF extraction for 2021 (online ECCMID format)
-- Better handling of sessions that only appear in overview grids
-- Additional congress years
-- Dashboard improvements (subcategory drill-down, new chart types)
-- Tagging quality evaluation against hand-labelled ground truth
-
----
-
-## Notes on PDFs
-
-Programme PDFs are not included — they are subject to ESCMID copyright.
-Request them from ESCMID or use your own copies. Filenames are configurable
-in `PROGRAMME_FILES`.
-
----
-
-## Licence
-
-MIT — see `LICENSE`.
+- **Speaker bios tab**: On-demand web search lookup for chairs and speakers in the Proposal Reviewer, with AI-summarised professional backgrounds. Planned as a button in the Review Form rather than a pre-fetched batch to control cost.
+- **Improved PDF parsing**: Replace the current pdfplumber column-separation approach with a structured text input pipeline — copying clean session blocks directly from the ESCMID programme viewer (which produces well-structured plain text) into a dedicated parser. This would eliminate remaining title truncation and chair-bleed artefacts.
